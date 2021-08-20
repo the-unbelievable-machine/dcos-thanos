@@ -3,6 +3,154 @@ scheduler:
   principal: {{FRAMEWORK_PRINCIPAL}}
   user: {{FRAMEWORK_USER}}
 pods:
+  prometheus_persistent:
+    count: {{PROMETHEUS_COUNT}}
+    allow-decommission: true
+    share-pid-namespace: true
+    uris:
+      - {{BOOTSTRAP_URI}}
+      - {{PROMETHEUS_URI}}
+      - {{THANOS_URI}}
+      - {{FETCHER_URI}}
+    placement: '{{{PROMETHEUS_PLACEMENT_CONSTRAINTS}}}'
+    {{#ENABLE_VIRTUAL_NETWORK}}
+    networks:
+      {{VIRTUAL_NETWORK_NAME}}:
+        labels: {{VIRTUAL_NETWORK_PLUGIN_LABELS}}
+    {{/ENABLE_VIRTUAL_NETWORK}}
+    volume:
+      path: "data"
+      type: "MOUNT"
+      size: "{{PROMETHEUS_VOLUME_SIZE}}"
+    tasks:
+      prometheus:
+        goal: RUNNING
+        cmd: |
+            set -e
+            chmod +x fetcher
+            {{#PROMETHEUS_CUSTOM_SCRAPE_CONFIG_BASE64}}
+            export PROMETHEUS_CUSTOM_SCRAPE_CONFIG=$(echo '{{{PROMETHEUS_CUSTOM_SCRAPE_CONFIG_BASE64}}}' | base64 -d)
+            {{/PROMETHEUS_CUSTOM_SCRAPE_CONFIG_BASE64}}
+
+            NEWLINE=$'\n'
+            THANOS_STORE_SCRAPE_TARGETS=""
+            for i in $(seq 0 $(({{THANOS_STORE_COUNT}}-1))); do
+                THANOS_STORE_SCRAPE_TARGETS="$THANOS_STORE_SCRAPE_TARGETS      - 'store-${i}-node.${FRAMEWORK_HOST}:19191'$NEWLINE"
+            done
+            export THANOS_STORE_SCRAPE_TARGETS
+            THANOS_QUERY_SCRAPE_TARGETS=""
+            for i in $(seq 0 $(({{THANOS_QUERY_COUNT}}-1))); do
+                THANOS_QUERY_SCRAPE_TARGETS="$THANOS_QUERY_SCRAPE_TARGETS      - 'query-${i}-node.${FRAMEWORK_HOST}:19192'$NEWLINE"
+            done
+            export THANOS_QUERY_SCRAPE_TARGETS
+
+            ./bootstrap
+            {{#PROMETHEUS_ALERTING_RULES_URL}}
+            mkdir -p data/rules
+            FETCHER_TARGET_DIR=data/rules ./fetcher {{PROMETHEUS_ALERTING_RULES_URL}}
+            {{/PROMETHEUS_ALERTING_RULES_URL}}
+
+            exec prometheus-*/prometheus --config.file=prometheus.yml \
+              --storage.tsdb.path="${MESOS_SANDBOX}/data" \
+              --storage.tsdb.retention.time="{{PROMETHEUS_TSDB_RETENTION}}" \
+              --storage.tsdb.max-block-duration=2h \
+              --storage.tsdb.min-block-duration=2h \
+              --web.enable-admin-api \
+              --web.enable-lifecycle
+        cpus: {{PROMETHEUS_CPUS}}
+        memory: {{PROMETHEUS_MEM}}
+        kill-grace-period: 30
+        configs:
+          prom-config:
+            template: prometheus.yml
+            dest: prometheus.yml
+        env:
+          SCRAPE_INTERVAL: {{PROMETHEUS_SCRAPE_INTERVAL}}
+          SCRAPE_TIMEOUT: {{PROMETHEUS_SCRAPE_TIMEOUT}}
+          ALERTMANAGER_ENABLED: {{ALERTMANAGER_ENABLED}}
+          ALERTMANAGER_HA: {{ALERTMANAGER_HA}}
+          PUSHGATEWAY_ENABLED: {{PUSHGATEWAY_ENABLED}}
+          THANOS_COMPACT_ENABLED: {{THANOS_COMPACT_ENABLED}}
+          GRAFANA_ENABLED: {{GRAFANA_ENABLED}}
+          DCOS_CLUSTER_NAME: {{DCOS_CLUSTER_NAME}}
+        readiness-check:
+          cmd: |
+            curl -f -s "http://${MESOS_CONTAINER_IP}:9090/-/ready"
+          interval: 5
+          delay: 5
+          timeout: 60
+        health-check:
+          cmd: |
+            curl -f -s "http://${MESOS_CONTAINER_IP}:9090/-/healthy"
+          interval: 20
+          timeout: 10
+          delay: 10
+          grace-period: 300
+          max-consecutive-failures: 6
+        ports:
+          prometheus:
+            port: 9090
+            env-key: PROMETHEUS_PORT
+            advertise: true
+      sidecar:
+        goal: RUNNING
+        cmd: |
+            set -e
+            ./bootstrap
+            until [ -e ${MESOS_SANDBOX}/data/wal ]
+            do
+                echo "Waiting for wal directory to be created"
+                sleep 5
+            done
+            echo ${THANOS_BUCKET_CONFIG_BASE64} | base64 -d > bucket_config.yml
+            exec thanos-*/thanos sidecar \
+              --tsdb.path ${MESOS_SANDBOX}/data \
+              --prometheus.url "http://${MESOS_CONTAINER_IP}:9090" \
+              --objstore.config-file bucket_config.yml \
+              --http-address 0.0.0.0:19191 \
+              --grpc-address 0.0.0.0:19090
+        env:
+          THANOS_BUCKET_CONFIG_BASE64: {{{THANOS_BUCKET_CONFIG_BASE64}}}
+        cpus: {{PROMETHEUS_SIDECAR_CPUS}}
+        memory: {{PROMETHEUS_SIDECAR_MEM}}
+        kill-grace-period: 40
+        readiness-check:
+          cmd: |
+            curl -f -s "http://${MESOS_CONTAINER_IP}:19191/-/ready"
+          interval: 5
+          delay: 5
+          timeout: 60
+        health-check:
+          cmd: |
+            curl -f -s "http://${MESOS_CONTAINER_IP}:19191/-/healthy"
+          interval: 20
+          timeout: 10
+          delay: 10
+          grace-period: 300
+          max-consecutive-failures: 6
+        ports:
+          thansos-sidecar:
+            port: 19090
+            env-key: THANOS_GRPC_PORT
+          thansos-sidecar-http:
+            port: 19091
+            env-key: THANOS_HTTP_PORT
+      {{#PROMETHEUS_ALERTING_RULES_URL}}
+      reload-rules:
+        essential: false
+        goal: FINISH
+        cmd: |
+          set -e
+          chmod +x fetcher
+          rm -rf tmp
+          mkdir tmp
+          FETCHER_TARGET_DIR=tmp ./fetcher {{PROMETHEUS_ALERTING_RULES_URL}}
+          rm -rf data/rules
+          mv tmp data/rules
+          curl -s -X POST http://localhost:9090/-/reload
+        cpus: 0.1
+        memory: 256
+      {{/PROMETHEUS_ALERTING_RULES_URL}}
   prometheus:
     count: {{PROMETHEUS_COUNT}}
     allow-decommission: true
