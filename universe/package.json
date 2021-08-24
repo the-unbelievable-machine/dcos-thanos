@@ -1,11 +1,11 @@
 
 {
   "packagingVersion": "4.0",
-  "upgradesFrom": ["0.1.0", "0.1.1", "0.1.2", "0.1.3", "0.1.4"],
-  "downgradesTo": ["0.1.0", "0.1.1", "0.1.2", "0.1.3", "0.1.4"],
+  "upgradesFrom": ["0.1.0", "0.1.1", "0.1.2", "0.1.3", "0.1.4", "0.1.5"],
+  "downgradesTo": ["0.1.0", "0.1.1", "0.1.2", "0.1.3", "0.1.4", "0.1.5"],
   "minDcosReleaseVersion": "1.13",
   "name": "thanos",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "maintainer": "MaibornWolff",
   "description": "HA monitoring stack based on thanos",
   "selected": false,
