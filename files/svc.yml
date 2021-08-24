@@ -91,7 +91,7 @@ pods:
           prometheus:
             port: 9090
             env-key: PROMETHEUS_PORT
-            advertise: true
+            # advertise: true # disabled to not interfere with prometheus pod
       sidecar:
         goal: RUNNING
         cmd: |
